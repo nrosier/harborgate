@@ -630,6 +630,9 @@ pub(crate) mod test_support {
                 trivy: Some("v0.0.1".to_owned()),
                 grype: None,
             }),
+            scanner_programs: std::sync::Arc::new(
+                crate::services::scanner::selection::ScannerPrograms::bundled(&dir),
+            ),
         };
         (state, dir)
     }
@@ -864,6 +867,9 @@ mod tests {
                 trivy: Some("v0.0.1".to_owned()),
                 grype: None,
             }),
+            scanner_programs: std::sync::Arc::new(
+                crate::services::scanner::selection::ScannerPrograms::bundled(&dir),
+            ),
         };
         (crate::app(Vec::new(), state), pool, dir)
     }

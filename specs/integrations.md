@@ -49,13 +49,40 @@ Decisions are marked `Decided (<date>, <who>)`. `Verified (<date>)` marks a clai
 ## Scanners (Trivy and Grype)
 
 - Two scanners, fixed keys `trivy` and `grype` (`services/scanner/mod.rs`, `Scanner`).
-- Each runs as a child process from a fixed absolute path in the image: `/usr/local/bin/trivy` and `/usr/local/bin/grype`. Verified (2026-11-11).
+- Each runs as a child process by absolute path. The default is the bundled binary in the image: `/usr/local/bin/trivy` and `/usr/local/bin/grype`. Verified (2026-11-11). A newer downloaded version on the data volume overrides it (see "Scanner selection and the data volume" below); the path is resolved in one place (`services/scanner/selection.rs`, `program_for`).
 - Out of process. Dockward never links a scanner library. The scanner's output is read from stdout, bounded by `scanner.output_max_bytes` (default 64 MiB) and killed at `scanner.timeout_s` (default 600 s) (`services/scanner/process.rs`, `services/scan/mod.rs`).
 
 ### Pinned binaries
 
 - The Dockerfile copies the scanners from digest-pinned release images, never a floating tag: Trivy from `aquasec/trivy@sha256:8f6bb947...` (`/usr/local/bin/trivy`), Grype from `anchore/grype@sha256:13113eec...` (`/grype`). Both are static, so they run on `scratch`. See [deployment.md](deployment.md).
 - Versions (verified 2026-11-13). The bundled Trivy is v0.76.2 (`sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb`) and the bundled Grype is v0.121.3 (`sha256:13113eeceab017260370cf540e1d25442c59665fd07d1b09b66d63bb0c282887`), the latest stable releases of each. The Dockerfile records the release in a comment above each pin, `security-scan.yml` pins the same versions (`TRIVY_VERSION`, `GRYPE_VERSION`), and `scripts/check-scanner-pins.sh` fails the build if a pin is missing, floating, or has no version comment. The fixtures and the `db_update` tests carry older Grype strings (v0.121.2) as sample data, not as the shipped version. Each release re-checks the pins (see [deployment.md](deployment.md), "Releases").
+
+### Scanner selection and the data volume
+
+Decided (2026-11-14, user, #390). Phase 1 is built: the layout, the startup selection, the rollback slot, the fallback on a broken scanner and the daily upstream check. Downloading, the checksum and Sigstore verification and the install route are phase 2. The update pill and the install action are screens and need an approved design first ([frontend.md](frontend.md)).
+
+- The bundled scanners stay the default, so dockward works offline and starts with nothing downloaded. A downloaded scanner is an override, and an update is always an explicit admin action, never automatic.
+- Layout (`services/scanner/volume.rs`): versioned folders under the data volume, `<DOCKWARD_DATA_DIR>/scanners/<scanner>/<version>/<scanner>`, for example `/data/scanners/trivy/0.77.0/trivy`. `<scanner>` is the fixed key and `<version>` the canonical `MAJOR.MINOR.PATCH`, so no upstream string reaches a path. `scanners/<scanner>/current` and `scanners/<scanner>/previous` are small pointer files that hold a version; each is written to a temporary file and renamed over the old one. A version that failed to launch carries a `broken` marker file in its folder.
+- Versions (`services/scanner/version.rs`): three dotted components of digits, an optional leading `v`, compared numerically per component (`0.76.10` is newer than `0.76.9`). Anything else (a pre-release suffix, a missing part, a leading zero) is malformed.
+- Startup selection (`services/scanner/selection.rs`, `select`), per scanner, against the bundled version read for About:
+  - nothing downloaded: the bundled binary;
+  - the current downloaded version is newer than the bundled one: the downloaded binary;
+  - the downloaded version is equal to or older than the bundled one: the scanner's whole `scanners/<scanner>` folder is purged and the bundled binary is used (bundled 0.76.2 and downloaded 0.76.2: purge; downloaded 0.77.0: use the download);
+  - a malformed current pointer is treated as not newer: purged, never used;
+  - Decided (2026-11-14, spec author, #390): a downloaded version marked broken, or one whose binary is missing, is not used and is kept; a bundled version that could not be read leaves the download in place and uses the bundled binary. Reason: nothing can be compared, and deleting is not reversible.
+- Rollback: exactly one previous version is kept. Recording a new current version keeps the old current as previous; a further update replaces the previous one and deletes its folder. A rollback switches the current pointer to the previous version (and the old current becomes previous), so a rollback is a pointer change. Both are functions in phase 1 (`record_current`, `rollback`); the admin action is phase 2 and the UI phase.
+- Fallback on a broken scanner (`services/scan/mod.rs`, `ScanEnv::run_scanner`): when the selected downloaded binary does not start (the spawn fails, step outcome `spawn_failed`), the version is marked broken on disk, the scanner switches to the bundled binary, and the same run is made again with it. Scans keep running. A run that started and exited non-zero is a normal scan failure and changes no selection. The same rule covers the database refresh. The broken version is shown by `GET /api/v1/about` ([api.md](api.md)) so the UI can warn later.
+- Logs hold the scanner key, the decision and version numbers only, never a path.
+
+### Upstream release check
+
+Decided (2026-11-14, user, #390): `services/scanner/upstream_check.rs`.
+
+- Once a day in the background (first check 300 s after start, then every 24 hours), dockward asks `GET https://api.github.com/repos/aquasecurity/trivy/releases/latest` and `GET https://api.github.com/repos/anchore/grype/releases/latest`. That route names the latest release that is not a draft or a pre-release; a body that marks a draft or a pre-release, or a tag that is not a plain version, is not an answer. Pre-releases are never offered.
+- The tag is compared with the bundled version. The answer (scanner, latest version, newer or not, `checked_at`) replaces the scanner's row in `scanner_releases` (migration 0017; [database.md](database.md)).
+- A failure (unreachable, a status other than 200, a timeout of 10 s, a body over 4 MiB or unreadable, a pre-release, a malformed tag, an unknown bundled version) is logged with the scanner key and the outcome only and records nothing new: the last good answer stays, and the next day asks again. Nothing is shown for a failed check.
+- The check runs on its own task and never takes the scanner lock, so it never blocks a scan.
+- What leaves dockward: one `GET` per scanner with the headers `Accept`, `User-Agent: Dockward` and `X-GitHub-Api-Version` only. No token, and the configured GitHub base URL is not used. The guarded client with the class `ScannerRelease` ([security.md](security.md), "Outbound HTTP (SSRF)") refuses any host but `api.github.com`. No response body reaches a log.
 
 ### Run arguments
 

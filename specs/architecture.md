@@ -42,7 +42,7 @@ Spinoff sections 5, 6 and 8 hold the rules.
 - Frontend and API are served from the same origin on port 8080.
 - The frontend is embedded in the Rust binary. In production it is not copied to disk for runtime serving.
 - No `/metrics` endpoint.
-- Scanners are not linked into the app. The pinned Trivy and Grype executables are copied into the image at `/usr/local/bin/`, and the app calls them by absolute path. The app image stays `FROM scratch` (spinoff decisions 5, 23).
+- Scanners are not linked into the app. The pinned Trivy and Grype executables are copied into the image at `/usr/local/bin/`, and the app calls them by absolute path. The app image stays `FROM scratch` (spinoff decisions 5, 23). The bundled executables are the default. A newer downloaded version under `<data dir>/scanners` overrides one, and an equal or older one is purged at startup (Decided 2026-11-14, user, #390; [integrations.md](integrations.md), "Scanner selection and the data volume").
 - Environment variables are `DOCKWARD_*`. The deprecated `HARBORGATE_*` name is read as a fallback in release 0.2 only. Each fallback read logs a deprecation warning, and `DOCKWARD_*` wins when both are set. The fallback is removed in the release after 0.2 (decision 57, `backend/src/config.rs`).
 - Fresh install only. There is no import from, and no upgrade of, a HarborGate database. A database that contains the `repo_mappings` table is refused at open with a fixed error (decisions 21 and 56; `backend/src/db/mod.rs`). The migration code that read HarborGate data was removed (PR #307).
 - v1 includes every page listed in [frontend.md](frontend.md). Pages not yet in the router are marked there.

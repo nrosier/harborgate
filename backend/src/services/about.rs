@@ -10,8 +10,13 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use serde::Serialize;
+use sqlx::SqlitePool;
 use tokio::process::Command;
 
+use crate::db::scanner_releases;
+use crate::error::AppError;
+use crate::services::scanner::selection::{ScannerPrograms, Selected};
+use crate::services::scanner::version::Version;
 use crate::services::scanner::{Scanner, environment};
 
 /// How long one version read may take.
@@ -43,11 +48,102 @@ impl About {
     pub async fn read_bundled(data_dir: &Path) -> Self {
         Self::read(
             &data_dir.join("scanner-cache"),
-            Scanner::Trivy.program(),
-            Scanner::Grype.program(),
+            Scanner::Trivy.bundled_program(),
+            Scanner::Grype.bundled_program(),
         )
         .await
     }
+
+    /// The bundled Trivy and Grype versions as parsed versions, `None` where the read failed or
+    /// the text is not a plain `vMAJOR.MINOR.PATCH`. The scanner selection and the upstream
+    /// check compare against these (#390).
+    pub fn bundled_versions(&self) -> [Option<Version>; 2] {
+        [
+            self.trivy.as_deref().and_then(Version::parse),
+            self.grype.as_deref().and_then(Version::parse),
+        ]
+    }
+}
+
+/// The body of `GET /api/v1/about`: the startup versions and the live scanner state (#390).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct AboutView {
+    #[serde(flatten)]
+    pub versions: About,
+    pub scanners: ScannersView,
+}
+
+/// The state of both scanners.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ScannersView {
+    pub trivy: ScannerView,
+    pub grype: ScannerView,
+}
+
+/// The state of one scanner. Versions are `vX.Y.Z`. Holds no path.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ScannerView {
+    /// `bundled` or `downloaded`: the binary scans use now.
+    pub in_use: &'static str,
+    /// The downloaded version in use, or `null` when the bundled one runs.
+    pub downloaded_version: Option<String>,
+    /// A downloaded version that failed to launch and is no longer used, or `null`.
+    pub broken_version: Option<String>,
+    /// The latest stable upstream release from the last successful daily check, or `null`.
+    pub latest_version: Option<String>,
+    /// True when that release is newer than the bundled scanner.
+    pub update_available: bool,
+    /// When the last successful check ran (RFC 3339), or `null`.
+    pub checked_at: Option<String>,
+}
+
+/// Builds the About body from the startup versions, the live selection and the stored checks.
+pub async fn view(
+    about: &About,
+    programs: &ScannerPrograms,
+    pool: &SqlitePool,
+) -> Result<AboutView, AppError> {
+    Ok(AboutView {
+        versions: about.clone(),
+        scanners: ScannersView {
+            trivy: scanner_view(Scanner::Trivy, programs, pool).await?,
+            grype: scanner_view(Scanner::Grype, programs, pool).await?,
+        },
+    })
+}
+
+async fn scanner_view(
+    scanner: Scanner,
+    programs: &ScannerPrograms,
+    pool: &SqlitePool,
+) -> Result<ScannerView, AppError> {
+    let state = programs.state(scanner);
+    let (in_use, downloaded_version) = match state.selected {
+        Selected::Bundled => ("bundled", None),
+        Selected::Downloaded(version) => ("downloaded", Some(version.tagged())),
+    };
+    let release = scanner_releases::get(pool, scanner.key()).await?;
+    let latest = release
+        .as_ref()
+        .and_then(|row| Version::parse(&row.latest_version));
+    let checked_at = match &release {
+        Some(row) => Some(crate::services::time::rfc3339(row.checked_at)?),
+        None => None,
+    };
+    Ok(ScannerView {
+        in_use,
+        downloaded_version,
+        broken_version: state.broken.map(|version| version.tagged()),
+        latest_version: latest.map(|version| version.tagged()),
+        // Newer than the bundled scanner, and not already installed: a downloaded version at or
+        // above the latest release needs no update.
+        update_available: release.is_some_and(|row| row.newer_than_bundled)
+            && latest.is_some_and(|latest| match state.selected {
+                Selected::Downloaded(in_use) => latest > in_use,
+                Selected::Bundled => true,
+            }),
+        checked_at,
+    })
 }
 
 async fn read_version(

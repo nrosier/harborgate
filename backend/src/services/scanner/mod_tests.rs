@@ -45,8 +45,8 @@ fn grype_scan_call_uses_oci_dir_and_no_update_flag() {
 
 #[test]
 fn programs_are_absolute_paths() {
-    assert!(Scanner::Trivy.program().is_absolute());
-    assert!(Scanner::Grype.program().is_absolute());
+    assert!(Scanner::Trivy.bundled_program().is_absolute());
+    assert!(Scanner::Grype.bundled_program().is_absolute());
 }
 
 #[test]

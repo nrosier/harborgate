@@ -33,6 +33,7 @@ Purpose: schema reference for dockward 0.2.0's SQLite database, and the decision
 | `cve_findings` | One row per (source, tag, CVE): the merged view of the tag's current image. |
 | `vulnerability_aliases` | Global, public ids only: one row per GHSA or GO id, pointing at its CVE id (migration 0007, #337). Written from scanner reports and from advisory lookups. |
 | `advisory_lookups` | Global, public ids only: the cached answer of an advisory lookup, one row per GHSA or GO id (`advisory_id`): `cve_id` (NULL when none is published), `looked_up_at`, `source` (`osv` or `github`). Kept forever. Failed lookups are not stored. Migration 0016 (#379). |
+| `scanner_releases` | Global, public version numbers only: the last successful daily upstream check per scanner (`scanner` is `trivy` or `grype`, the key): `latest_version` (canonical `MAJOR.MINOR.PATCH`, the latest stable GitHub release), `newer_than_bundled` (0 or 1), `checked_at`. A failed check writes nothing, so the last good answer stays. Migration 0017 (#390). |
 | `cve_acceptances` | Accepted risk or a false-positive verdict, per source and CVE. |
 | `totp_secrets` | One row per local user who started TOTP enrolment: the sealed secret, `enabled`, `totp_last_step` (replay guard), timestamps. Migration 0009 (#341). |
 | `totp_recovery_codes` | Argon2id hashes of a user's recovery codes and `used_at`. Migration 0009 (#341). |

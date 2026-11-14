@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT scanner AS \"scanner!\", latest_version, newer_than_bundled AS \"newer_than_bundled: bool\",\n                  checked_at\n           FROM scanner_releases WHERE scanner = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "scanner!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "scanner_releases",
+            "name": "scanner"
+          }
+        }
+      },
+      {
+        "name": "latest_version",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "scanner_releases",
+            "name": "latest_version"
+          }
+        }
+      },
+      {
+        "name": "newer_than_bundled: bool",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "scanner_releases",
+            "name": "newer_than_bundled"
+          }
+        }
+      },
+      {
+        "name": "checked_at",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "scanner_releases",
+            "name": "checked_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "f0f4da32cc9c3e4218684dc50982088b34d3b8e1f07dd9caba4f06f6b54a68df"
+}

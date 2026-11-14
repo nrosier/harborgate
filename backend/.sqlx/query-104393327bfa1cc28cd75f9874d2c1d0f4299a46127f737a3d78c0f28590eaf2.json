@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO scanner_releases (scanner, latest_version, newer_than_bundled, checked_at)\n         VALUES (?, ?, ?, ?)\n         ON CONFLICT (scanner) DO UPDATE SET\n             latest_version = excluded.latest_version,\n             newer_than_bundled = excluded.newer_than_bundled,\n             checked_at = excluded.checked_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "104393327bfa1cc28cd75f9874d2c1d0f4299a46127f737a3d78c0f28590eaf2"
+}

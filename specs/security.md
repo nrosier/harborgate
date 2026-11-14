@@ -220,6 +220,7 @@ Decided (2026-11-05, user, #136). The application log is the `tracing` output us
   - GitHub requests go only to the configured API base URL. The default is the fixed host `api.github.com`. An admin may set a custom one (GitHub Enterprise Server); see "GitHub base URL" below.
 
 - Advisory lookups (Decided 2026-11-13, user, #379): the scan step calls two fixed public hosts, `api.osv.dev` and `api.github.com`, to learn the CVE id behind a GHSA or GO id ([integrations.md](integrations.md), "Advisory lookup"). They use the guarded client with the class `Advisory`: HTTPS only, no redirects, the resolved-address check, no opt-out. The request is a `GET` with the advisory id in the path and no token or other data. The GitHub advisory call never carries a credential and ignores the configured GitHub base URL.
+- Scanner release check (Decided 2026-11-14, user, #390): a daily background task calls the fixed host `api.github.com` for the latest Trivy and Grype release ([integrations.md](integrations.md), "Upstream release check"). It uses the guarded client with the class `ScannerRelease`: HTTPS only, no redirects, the resolved-address check, no opt-out, and any host but `api.github.com` is refused before a request is built. The request is a `GET` with no token or other data, and the configured GitHub base URL is not used.
 
 ## GitHub base URL
 

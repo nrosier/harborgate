@@ -178,7 +178,9 @@ impl From<OutboundError> for SendError {
     fn from(error: OutboundError) -> Self {
         match error {
             OutboundError::BlockedAddress => SendError::Blocked,
-            OutboundError::NotHttps | OutboundError::Resolve => SendError::Target,
+            OutboundError::NotHttps | OutboundError::Resolve | OutboundError::HostNotAllowed => {
+                SendError::Target
+            }
             OutboundError::ClientBuild => SendError::Config,
         }
     }

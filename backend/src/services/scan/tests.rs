@@ -1686,3 +1686,96 @@ async fn run_triggers_of(pool: &SqlitePool, platform: &str) -> Vec<(String, Stri
     .await
     .unwrap_or_else(|err| panic!("runs: {err}"))
 }
+
+/// #390: a scan setup whose Trivy is a downloaded version on the volume (newer than the bundled
+/// v0.76.2), with `body` as the downloaded file and `executable` its mode. The bundled scripts of
+/// `fx` stay the fallback.
+fn with_downloaded_trivy(
+    fx: &mut Fx,
+    body: &str,
+    executable: bool,
+) -> std::sync::Arc<crate::services::scanner::selection::ScannerPrograms> {
+    use crate::services::scanner::selection::ScannerPrograms;
+    use crate::services::scanner::version::Version;
+    use crate::services::scanner::volume::ScannerVolume;
+    let Some(downloaded) = Version::parse("0.77.0") else {
+        panic!("version");
+    };
+    let volume = ScannerVolume::under(&fx.dir);
+    let folder = volume.version_dir(Scanner::Trivy, downloaded);
+    if let Err(err) = std::fs::create_dir_all(&folder) {
+        panic!("dir: {err}");
+    }
+    let binary = volume.binary_path(Scanner::Trivy, downloaded);
+    if let Err(err) = std::fs::write(&binary, format!("#!/bin/sh\n{body}\n")) {
+        panic!("binary: {err}");
+    }
+    let mode = if executable { 0o755 } else { 0o644 };
+    if let Err(err) = std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(mode)) {
+        panic!("chmod: {err}");
+    }
+    if let Err(err) = volume.record_current(Scanner::Trivy, downloaded) {
+        panic!("record: {err:?}");
+    }
+    let programs = std::sync::Arc::new(
+        ScannerPrograms::with_bundled_paths(
+            &fx.dir,
+            fx.bin().join("trivy"),
+            fx.bin().join("grype"),
+        )
+        .select_at_startup([Version::parse("0.76.2"), Version::parse("0.121.3")]),
+    );
+    fx.env = ScanEnv::with_selection(fx.dir.join("scanner-cache"), programs.clone());
+    programs
+}
+
+#[tokio::test]
+async fn a_downloaded_scanner_that_does_not_start_is_marked_broken_and_bundled_scans() {
+    use crate::services::scanner::selection::Selected;
+    let (trivy, grype) = ok_scripts("");
+    let mut fx = Fx::new("launch-fail", &trivy, &grype).await;
+    // Not executable: the spawn fails, so the binary never starts.
+    let programs = with_downloaded_trivy(&mut fx, "exit 0", false);
+    assert!(matches!(
+        programs.state(Scanner::Trivy).selected,
+        Selected::Downloaded(_)
+    ));
+    assert_eq!(fx.queue(P_OLD).await, 2);
+    let outcomes = fx.drain().await;
+    // The scan kept running: the bundled Trivy produced the report.
+    assert_eq!(
+        outcomes_only(&outcomes),
+        vec![("grype", &JobOutcome::Done), ("trivy", &JobOutcome::Done)]
+    );
+    let state = programs.state(Scanner::Trivy);
+    assert_eq!(state.selected, Selected::Bundled);
+    assert_eq!(
+        state.broken.map(|version| version.to_string()).as_deref(),
+        Some("0.77.0")
+    );
+    assert!(fx.dir.join("scanners/trivy/0.77.0/broken").is_file());
+    // Grype was never downloaded and is untouched.
+    assert_eq!(programs.state(Scanner::Grype).selected, Selected::Bundled);
+    assert_eq!(programs.state(Scanner::Grype).broken, None);
+}
+
+#[tokio::test]
+async fn a_downloaded_scanner_that_exits_non_zero_is_a_normal_scan_failure() {
+    use crate::services::scanner::selection::Selected;
+    let (trivy, grype) = ok_scripts("");
+    let mut fx = Fx::new("nonzero", &trivy, &grype).await;
+    // It starts and exits 3: a scan failure, not a launch failure.
+    let programs = with_downloaded_trivy(&mut fx, "exit 3", true);
+    assert_eq!(fx.queue(P_OLD).await, 2);
+    let outcomes = fx.drain().await;
+    assert!(
+        outcomes.iter().any(|(scanner, outcome)| scanner == "trivy"
+            && matches!(outcome, JobOutcome::Failed(text) if text == "scanner failed")),
+        "{:?}",
+        outcomes_only(&outcomes)
+    );
+    let state = programs.state(Scanner::Trivy);
+    assert!(matches!(state.selected, Selected::Downloaded(_)));
+    assert_eq!(state.broken, None);
+    assert!(!fx.dir.join("scanners/trivy/0.77.0/broken").exists());
+}

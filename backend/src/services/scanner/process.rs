@@ -157,7 +157,9 @@ impl ScannerRunner {
 
     /// Runs one invocation and returns its captured stdout. Failures return
     /// [`AppError::Scanner`] with one of the fixed texts of section 6. The step record is
-    /// dropped; use [`Self::run_recorded`] to keep it.
+    /// dropped; use [`Self::run_recorded`] to keep it. Production runs go through
+    /// `ScanEnv::run_scanner`, which adds the fallback on a launch failure (#390).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub async fn run(&self, invocation: Invocation<'_>) -> Result<Vec<u8>, AppError> {
         self.run_recorded(invocation).await.0
     }

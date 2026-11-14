@@ -8,7 +8,9 @@
 //! environment.
 //!
 //! Submodules: [`process`] runs a child process, [`parse`] reads the JSON, [`db_refresh`] runs
-//! the daily refresh. This module holds the command lines. It has no database code.
+//! the daily refresh, [`volume`] and [`selection`] pick the bundled or a downloaded binary
+//! (#390), [`upstream_check`] asks GitHub daily for the latest stable release. This module holds
+//! the command lines. It has no database code.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -18,7 +20,11 @@ pub mod db_update;
 pub mod parse;
 pub mod process;
 pub mod redact;
+pub mod selection;
 pub mod steplog;
+pub mod upstream_check;
+pub mod version;
+pub mod volume;
 
 /// The two scanners. Their keys are fixed (the `scanner` column of `scan_runs` and
 /// `scanner_databases`, `specs/spinoff-local-scan.md`, section 9).
@@ -37,8 +43,10 @@ impl Scanner {
         }
     }
 
-    /// The absolute path of the pinned executable in the app image (decision 23).
-    pub fn program(self) -> &'static Path {
+    /// The absolute path of the pinned executable in the app image (decision 23). It is the
+    /// default; the binary a run uses is resolved by [`selection::program_for`], which returns
+    /// this path unless a newer downloaded version is selected (#390).
+    pub fn bundled_program(self) -> &'static Path {
         match self {
             Scanner::Trivy => Path::new("/usr/local/bin/trivy"),
             Scanner::Grype => Path::new("/usr/local/bin/grype"),

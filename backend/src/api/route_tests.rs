@@ -2116,7 +2116,41 @@ async fn about_returns_the_dockward_and_both_scanner_versions() {
                 "dockward": env!("CARGO_PKG_VERSION"),
                 "trivy": "v0.76.2",
                 "grype": "v0.121.3",
+                "scanners": {
+                    "trivy": idle_scanner(),
+                    "grype": idle_scanner(),
+                },
             })
         );
     }
+    // A stored daily check shows the latest stable release and whether it is newer (#390).
+    let stored =
+        crate::db::scanner_releases::put(&fx.pool, "trivy", "0.77.0", true, 1_800_000_000).await;
+    assert!(stored.is_ok());
+    let (status, body) = fx.read("/api/v1/about", &fx.owner).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["scanners"]["trivy"],
+        json!({
+            "in_use": "bundled",
+            "downloaded_version": null,
+            "broken_version": null,
+            "latest_version": "v0.77.0",
+            "update_available": true,
+            "checked_at": "2027-01-15T08:00:00Z",
+        })
+    );
+    assert_eq!(body["scanners"]["grype"], idle_scanner());
+}
+
+/// A scanner on its bundled binary with no check recorded yet.
+fn idle_scanner() -> serde_json::Value {
+    json!({
+        "in_use": "bundled",
+        "downloaded_version": null,
+        "broken_version": null,
+        "latest_version": null,
+        "update_available": false,
+        "checked_at": null,
+    })
 }

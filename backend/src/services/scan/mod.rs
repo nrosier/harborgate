@@ -30,6 +30,7 @@ mod tests;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use sqlx::SqlitePool;
@@ -42,7 +43,10 @@ use crate::services::discovery::{MSG_BAD_PAYLOAD, fixed_text};
 use crate::services::jobs::MAX_ATTEMPTS;
 use crate::services::publish;
 use crate::services::scanner::parse::{self, Report};
-use crate::services::scanner::process::{Invocation, Limits, ScannerRunner};
+use crate::services::scanner::process::{
+    Invocation, Limits, ScannerRunner, StepOutcome, StepRecord,
+};
+use crate::services::scanner::selection::ScannerPrograms;
 use crate::services::scanner::steplog::{self, StepSlot};
 use crate::services::scanner::{Scanner, cache_dir, environment, scan_args, temp_dir};
 use crate::services::storage::eviction;
@@ -60,25 +64,24 @@ pub const TIMEOUT_KEY: &str = "scanner.timeout_s";
 /// `scanner.output_max_bytes`: the cap on one run's output (section 13).
 pub const OUTPUT_MAX_KEY: &str = "scanner.output_max_bytes";
 
-/// What the scan job needs besides the pool: the runner, the cache root and the executables.
+/// What the scan job needs besides the pool: the runner, the cache root and the scanner
+/// selection (the bundled binaries, or a newer downloaded one, #390).
 #[derive(Debug, Clone)]
 pub struct ScanEnv {
     runner: ScannerRunner,
     cache_root: PathBuf,
-    trivy: PathBuf,
-    grype: PathBuf,
+    programs: Arc<ScannerPrograms>,
     advisory: AdvisoryLookup,
 }
 
 impl ScanEnv {
-    /// The production setup: the pinned executables at their absolute paths and the cache under
+    /// The production setup: the scanner selection made at startup and the cache under
     /// `<data dir>/scanner-cache`.
-    pub fn under(data_dir: &Path) -> Self {
+    pub fn new(data_dir: &Path, programs: Arc<ScannerPrograms>) -> Self {
         Self {
             runner: ScannerRunner::new(),
             cache_root: data_dir.join("scanner-cache"),
-            trivy: Scanner::Trivy.program().to_owned(),
-            grype: Scanner::Grype.program().to_owned(),
+            programs,
             // Tests that build the production setup have no network: no lookup is made.
             #[cfg(not(test))]
             advisory: AdvisoryLookup::live(),
@@ -87,14 +90,27 @@ impl ScanEnv {
         }
     }
 
-    /// A setup that calls other executables. Used by the tests, with scripts.
+    /// The production setup with the bundled executables only. Used by the tests.
+    #[cfg(test)]
+    pub fn under(data_dir: &Path) -> Self {
+        Self::new(data_dir, Arc::new(ScannerPrograms::bundled(data_dir)))
+    }
+
+    /// A setup that calls other executables as the bundled ones. Used by the tests, with
+    /// scripts. Nothing is downloaded.
     #[cfg(test)]
     pub fn with_programs(cache_root: PathBuf, trivy: PathBuf, grype: PathBuf) -> Self {
+        let programs = ScannerPrograms::with_bundled_paths(&cache_root, trivy, grype);
+        Self::with_selection(cache_root, Arc::new(programs))
+    }
+
+    /// A setup with a given scanner selection. Used by the tests.
+    #[cfg(test)]
+    pub fn with_selection(cache_root: PathBuf, programs: Arc<ScannerPrograms>) -> Self {
         Self {
             runner: ScannerRunner::new(),
             cache_root,
-            trivy,
-            grype,
+            programs,
             advisory: AdvisoryLookup::off(),
         }
     }
@@ -106,16 +122,44 @@ impl ScanEnv {
         self
     }
 
-    pub(crate) fn program(&self, scanner: Scanner) -> &Path {
-        match scanner {
-            Scanner::Trivy => &self.trivy,
-            Scanner::Grype => &self.grype,
+    /// Runs `scanner` with the selected binary, through the shared runner. When a downloaded
+    /// binary does not start (the spawn fails), it is marked broken, the bundled binary is
+    /// selected, and the run is made again with it (#390). A run that started and exited
+    /// non-zero is a normal failure: it is returned as it is and changes no selection.
+    pub(crate) async fn run_scanner(
+        &self,
+        scanner: Scanner,
+        args: &[OsString],
+        env: &[(OsString, OsString)],
+        limits: Limits,
+        log_stdout: bool,
+    ) -> (Result<Vec<u8>, AppError>, StepRecord) {
+        let (program, used) = self.programs.program(scanner);
+        let attempt = self
+            .runner
+            .run_recorded(Invocation {
+                program: &program,
+                args,
+                env,
+                limits,
+                log_stdout,
+            })
+            .await;
+        if attempt.1.outcome != StepOutcome::SpawnFailed
+            || !self.programs.launch_failed(scanner, used)
+        {
+            return attempt;
         }
-    }
-
-    /// The runner that holds the one-scanner-process-at-a-time lock.
-    pub(crate) fn runner(&self) -> &ScannerRunner {
-        &self.runner
+        let (program, _) = self.programs.program(scanner);
+        self.runner
+            .run_recorded(Invocation {
+                program: &program,
+                args,
+                env,
+                limits,
+                log_stdout,
+            })
+            .await
     }
 
     /// The root of the scanner caches.
@@ -361,14 +405,7 @@ async fn scan_and_store(
     )
     .await;
     let (result, record) = env
-        .runner
-        .run_recorded(Invocation {
-            program: env.program(scanner),
-            args: &args,
-            env: &vars,
-            limits: process_limits,
-            log_stdout: false,
-        })
+        .run_scanner(scanner, &args, &vars, process_limits, false)
         .await;
     steplog::finish(pool, step_id.as_deref(), &record).await;
     let body = match result {

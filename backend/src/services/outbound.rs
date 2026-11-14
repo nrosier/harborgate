@@ -32,7 +32,14 @@ pub enum TargetClass {
     /// The public advisory databases asked for the CVE id behind a GHSA or GO id (#379): the
     /// fixed hosts `api.osv.dev` and `api.github.com`. No token is sent, and there is no opt-out.
     Advisory,
+    /// The daily scanner release check (#390): the GitHub latest-release API on the fixed host
+    /// `api.github.com` only ([`SCANNER_RELEASE_HOST`]). No token is sent, the configured GitHub
+    /// base URL is ignored, and there is no opt-out.
+    ScannerRelease,
 }
+
+/// The only host the [`TargetClass::ScannerRelease`] client may reach.
+pub const SCANNER_RELEASE_HOST: &str = "api.github.com";
 
 /// Errors from the outbound layer. Messages are fixed text and never include the URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +52,8 @@ pub enum OutboundError {
     ClientBuild,
     /// The host name did not resolve.
     Resolve,
+    /// The host is not one this target class may reach.
+    HostNotAllowed,
 }
 
 impl fmt::Display for OutboundError {
@@ -58,6 +67,9 @@ impl fmt::Display for OutboundError {
                 f.write_str("the outbound HTTP client could not be built")
             }
             OutboundError::Resolve => f.write_str("the target host could not be resolved"),
+            OutboundError::HostNotAllowed => {
+                f.write_str("the target host is not allowed for this request")
+            }
         }
     }
 }
@@ -195,6 +207,8 @@ pub struct OutboundClient {
     allow_private: bool,
     /// Set for the GitHub client: the live configured GitHub URLs.
     github: Option<GithubTarget>,
+    /// Set for a class limited to one fixed host: any other host is refused before a request.
+    fixed_host: Option<&'static str>,
 }
 
 impl OutboundClient {
@@ -206,6 +220,13 @@ impl OutboundClient {
             && target.current().trusted_host() == Some(host)
         {
             return require_https(url);
+        }
+        if let Some(fixed) = self.fixed_host
+            && !url
+                .host_str()
+                .is_some_and(|host| host.eq_ignore_ascii_case(fixed))
+        {
+            return Err(OutboundError::HostNotAllowed);
         }
         check_target(url, self.class, self.allow_private)
     }
@@ -259,7 +280,20 @@ pub fn client(class: TargetClass, allow_private: bool) -> Result<OutboundClient,
         class,
         allow_private,
         github: None,
+        fixed_host: fixed_host_of(class),
     })
+}
+
+/// The fixed host of a class that may reach one host only.
+fn fixed_host_of(class: TargetClass) -> Option<&'static str> {
+    match class {
+        TargetClass::ScannerRelease => Some(SCANNER_RELEASE_HOST),
+        TargetClass::Harbor
+        | TargetClass::Oidc
+        | TargetClass::Alerts
+        | TargetClass::GitHub
+        | TargetClass::Advisory => None,
+    }
 }
 
 /// Resolves like [`GuardedResolver`] for the GitHub class, except that the configured GitHub
@@ -306,6 +340,7 @@ pub fn github_client(target: GithubTarget) -> Result<OutboundClient, OutboundErr
         class: TargetClass::GitHub,
         allow_private: false,
         github: Some(target),
+        fixed_host: None,
     })
 }
 
@@ -347,6 +382,8 @@ pub fn client_trusting(
         class,
         allow_private,
         github: None,
+        // A loopback test server stands in for the fixed host.
+        fixed_host: None,
     })
 }
 
@@ -523,6 +560,36 @@ mod tests {
     fn client_builds_with_redirects_disabled_and_https_only() {
         assert!(client(TargetClass::Harbor, false).is_ok());
         assert!(client(TargetClass::GitHub, false).is_ok());
+    }
+
+    #[test]
+    fn the_scanner_release_client_reaches_api_github_com_only() {
+        let client = match client(TargetClass::ScannerRelease, false) {
+            Ok(client) => client,
+            Err(err) => panic!("client: {err}"),
+        };
+        let url = |text: &str| match reqwest::Url::parse(text) {
+            Ok(url) => url,
+            Err(err) => panic!("url: {err}"),
+        };
+        let latest = url("https://api.github.com/repos/aquasecurity/trivy/releases/latest");
+        assert!(client.get(&latest).is_ok());
+        for other in [
+            "https://github.com/aquasecurity/trivy",
+            "https://api.osv.dev/v1/vulns/x",
+            "https://api.github.com.evil.test/",
+            "https://8.8.8.8/",
+        ] {
+            assert_eq!(
+                client.get(&url(other)).err(),
+                Some(OutboundError::HostNotAllowed),
+                "{other}"
+            );
+        }
+        assert_eq!(
+            client.get(&url("http://api.github.com/")).err(),
+            Some(OutboundError::NotHttps)
+        );
     }
 
     #[tokio::test]

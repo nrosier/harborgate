@@ -31,6 +31,7 @@ pub mod key_rotation;
 pub mod publish;
 pub mod retention;
 pub mod scan_runs;
+pub mod scanner_releases;
 pub mod scans;
 #[allow(dead_code)] // Used by the setup and login services.
 pub mod setup;
@@ -236,6 +237,7 @@ mod tests {
             "scan_runs",
             "scanner_databases",
             "scanner_findings",
+            "scanner_releases",
             "source_credentials",
             "system_config",
             "tag_observations",
@@ -438,13 +440,13 @@ mod tests {
             .await
             .map_err(|_| AppError::InternalError)?;
         assert_eq!((runs, findings), (1, 1));
-        // Every migration applied, in order: 0007 (aliases), 0008 (manual trigger), 0009 (TOTP), 0010 (empty jobs), 0012 (CVE scanners), 0013 (id reason), 0014 (fixed note), 0015 (acceptance kind), 0016 (advisory lookups).
+        // Every migration applied, in order: 0007 (aliases), 0008 (manual trigger), 0009 (TOTP), 0010 (empty jobs), 0012 (CVE scanners), 0013 (id reason), 0014 (fixed note), 0015 (acceptance kind), 0016 (advisory lookups), 0017 (scanner releases).
         let versions: Vec<i64> =
             sqlx::query_scalar("SELECT version FROM _sqlx_migrations ORDER BY version")
                 .fetch_all(&pool)
                 .await
                 .map_err(|_| AppError::InternalError)?;
-        assert_eq!(versions, (1..=16).collect::<Vec<i64>>());
+        assert_eq!(versions, (1..=17).collect::<Vec<i64>>());
         let names: Vec<(String,)> = sqlx::query_as(
             "SELECT name FROM sqlite_master
              WHERE name IN ('idx_scan_runs_current', 'newest_digest_tags', 'tag_scan_times',

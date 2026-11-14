@@ -19,7 +19,7 @@ use sqlx::SqlitePool;
 use tokio::sync::watch;
 
 use super::db_refresh::{DatabaseTool, RefreshStore, RunTiming, refresh, run_error_text};
-use super::process::{Invocation, Limits};
+use super::process::Limits;
 use super::steplog::{self, StepSlot};
 use super::{Scanner, cache_dir, environment, temp_dir, update_args};
 use crate::db::job_runs::{self, JobRun};
@@ -196,14 +196,7 @@ impl ProcessTool {
         .await;
         let (result, record) = self
             .env
-            .runner()
-            .run_recorded(Invocation {
-                program: self.env.program(scanner),
-                args,
-                env: &vars,
-                limits: self.limits,
-                log_stdout: true,
-            })
+            .run_scanner(scanner, args, &vars, self.limits, true)
             .await;
         steplog::finish(&self.pool, step_id.as_deref(), &record).await;
         result
@@ -249,17 +242,12 @@ impl DatabaseTool for ProcessTool {
                     vec!["db".into(), "status".into(), "-o".into(), "json".into()];
                 // A status read, not an update step: it is not logged, and its stdout is the
                 // build time only.
-                let body = self
+                let vars = environment(self.env.cache_root(), scanner, false);
+                let (result, _record) = self
                     .env
-                    .runner()
-                    .run(Invocation {
-                        program: self.env.program(scanner),
-                        args: &args,
-                        env: &environment(self.env.cache_root(), scanner, false),
-                        limits: self.limits,
-                        log_stdout: false,
-                    })
-                    .await?;
+                    .run_scanner(scanner, &args, &vars, self.limits, false)
+                    .await;
+                let body = result?;
                 String::from_utf8(body).map_err(|_| unavailable)?
             }
         };

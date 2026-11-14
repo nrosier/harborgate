@@ -59,4 +59,7 @@ pub struct AppState {
     /// The dockward version and the bundled scanner versions, read once at startup
     /// (`specs/api.md`, About).
     pub about: Arc<crate::services::about::About>,
+    /// The live scanner selection: the bundled binaries or a newer downloaded one, and a
+    /// downloaded version marked broken (#390). Shared with the scan job.
+    pub scanner_programs: Arc<crate::services::scanner::selection::ScannerPrograms>,
 }

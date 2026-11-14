@@ -610,6 +610,14 @@ async fn serve(app_log: Arc<services::app_log::AppLog>) -> Result<(), Box<dyn st
             |_| "could not build the registry client (check DOCKWARD_ALLOW_PRIVATE_REGISTRIES)",
         )?,
     );
+    // A scanner version that cannot be read is null, and startup goes on. The bundled versions
+    // decide whether a downloaded scanner is used, or purged (#390).
+    let about = services::about::About::read_bundled(&settings.data_dir).await;
+    let bundled_versions = about.bundled_versions();
+    let scanner_programs = Arc::new(
+        services::scanner::selection::ScannerPrograms::bundled(&settings.data_dir)
+            .select_at_startup(bundled_versions),
+    );
     let state = api::state::AppState {
         pool,
         session_key,
@@ -637,8 +645,8 @@ async fn serve(app_log: Arc<services::app_log::AppLog>) -> Result<(), Box<dyn st
             5,
             std::time::Duration::from_secs(15 * 60),
         ),
-        // A scanner version that cannot be read is null, and startup goes on.
-        about: Arc::new(services::about::About::read_bundled(&settings.data_dir).await),
+        about: Arc::new(about),
+        scanner_programs,
     };
     let terminate = signal(SignalKind::terminate())?;
     let listener = TcpListener::bind(BIND_ADDR).await?;
@@ -720,7 +728,7 @@ async fn serve(app_log: Arc<services::app_log::AppLog>) -> Result<(), Box<dyn st
         notifier,
         state.pool.clone(),
         services::storage::StoreRoot::under(&state.data_dir),
-        services::scan::ScanEnv::under(&state.data_dir),
+        services::scan::ScanEnv::new(&state.data_dir, state.scanner_programs.clone()),
         publisher,
     ));
     let worker_task = tokio::spawn(async move {
@@ -745,13 +753,28 @@ async fn serve(app_log: Arc<services::app_log::AppLog>) -> Result<(), Box<dyn st
         stop_rx.clone(),
     ));
 
+    // The latest stable Trivy and Grype releases are checked once a day (#390). The check runs on
+    // its own task and never blocks a scan; a failure records nothing.
+    let upstream_task = tokio::spawn(services::scanner::upstream_check::run(
+        state.pool.clone(),
+        services::scanner::upstream_check::UpstreamCheck::live(),
+        bundled_versions,
+        stop_rx.clone(),
+    ));
+
     let mut graceful = stop_rx.clone();
     let router = app(settings.trusted_proxies.clone(), state)
         .into_make_service_with_connect_info::<std::net::SocketAddr>();
     let serve = axum::serve(listener, router).with_graceful_shutdown(async move {
         let _ = graceful.wait_for(|stopped| *stopped).await;
     });
-    let tasks = vec![worker_task, retention_task, discovery_task, db_update_task];
+    let tasks = vec![
+        worker_task,
+        retention_task,
+        discovery_task,
+        db_update_task,
+        upstream_task,
+    ];
 
     let mut serve = Box::pin(std::future::IntoFuture::into_future(serve));
     let first = tokio::select! {
@@ -939,6 +962,9 @@ pub(crate) mod tests {
                 trivy: Some("v0.0.1".to_owned()),
                 grype: None,
             }),
+            scanner_programs: std::sync::Arc::new(
+                crate::services::scanner::selection::ScannerPrograms::bundled(&dir),
+            ),
         };
         let response = app(Vec::new(), state)
             .oneshot(
@@ -1014,6 +1040,9 @@ pub(crate) mod tests {
                 trivy: Some("v0.76.2".to_owned()),
                 grype: Some("v0.121.3".to_owned()),
             }),
+            scanner_programs: std::sync::Arc::new(
+                crate::services::scanner::selection::ScannerPrograms::bundled(&dir),
+            ),
         };
         (app(Vec::new(), state), pool, dir)
     }
